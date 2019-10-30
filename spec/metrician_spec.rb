@@ -104,7 +104,13 @@ RSpec.describe Metrician do
     describe "honeybadger", skip: should_skip?('honeybadger') do
       before do
         Honeybadger.configure do |config|
-          config.disabled = true
+          # For some reason, the config.respond_to? returns true for all values
+          # so here's some terrible exception-based flow control.
+          begin
+            config.disabled = true # versions 3.3.1 or older
+          rescue
+            config.report_data = false
+          end
         end
       end
 
@@ -241,6 +247,7 @@ RSpec.describe Metrician do
 
     describe "sidekiq", skip: should_skip?('sidekiq') do
       before do
+        require 'sidekiq/testing'
         Sidekiq::Testing.inline!
         @agent = Metrician.null_agent
         Metrician.activate(@agent)
@@ -293,6 +300,27 @@ RSpec.describe Metrician do
         # worker bits at latest possible time
         lambda { TestSidekiqWorker.perform_async({ "error" => true}) }.should raise_error(StandardError)
       end
+
+      specify "job errors are instrumented even if the user uses Exception instead of StandardError" do
+        Metrician.configuration[:jobs][:job_specific][:enabled] = true
+        @agent.stub(:increment)
+        @agent.should_receive(:increment).with("app.jobs.error", 1)
+
+        # avoid load order error of sidekiq here by just including the
+        # worker bits at latest possible time
+        lambda { TestSidekiqWorker.perform_async({ "exception" => true }) }.should raise_error(Exception)
+      end
+      
+      specify "job errors are instrumented per job even if the user uses Exception instead of StandardError" do
+        Metrician.configuration[:jobs][:job_specific][:enabled] = true
+        @agent.stub(:increment)
+        @agent.should_receive(:increment).with("app.jobs.error.job.TestSidekiqWorker", 1)
+
+        # avoid load order error of sidekiq here by just including the
+        # worker bits at latest possible time
+        lambda { TestSidekiqWorker.perform_async({ "exception" => true }) }.should raise_error(Exception)
+      end
+      
     end
   end
 
